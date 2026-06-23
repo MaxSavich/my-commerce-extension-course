@@ -10,7 +10,6 @@ let cachedExpiryMs = 0;
 
 function normalizeScopes (raw) {
   if (!raw) return null;
-  // Accept: JS array, JSON-array string '["a","b"]', or comma/space-separated string.
   let arr = raw;
   if (typeof raw === 'string') {
     const s = raw.trim();
@@ -57,18 +56,21 @@ async function main (params) {
   const logger = Core.Logger('order-event-consumer', {
     level: params.LOG_LEVEL || 'info',
   });
+  const startMs = Date.now();
 
   try {
     const eventId = params.event_id;
     const eventData = params.data?.value || params.event?.data || {};
     const eventType = params.type || params.event_type || 'unknown';
 
-    logger.info(`Event received: ${eventType}, ID: ${eventId}`);
-
     const state = await stateLib.init();
     const existing = await state.get(`event-${eventId}`);
     if (existing && existing.value) {
-      logger.info(`Event ${eventId} already processed, skipping`);
+      logger.info(JSON.stringify({
+        action: 'order-event-consumer', message: 'Duplicate event skipped',
+        eventId, eventType, durationMs: Date.now() - startMs,
+        timestamp: new Date().toISOString(),
+      }));
       return {
         statusCode: 200,
         body: { message: 'Event already processed', eventId },
@@ -80,17 +82,17 @@ async function main (params) {
       || eventData.id;
 
     if (!orderId) {
-      logger.warn('No order ID found in event payload');
+      logger.warn(JSON.stringify({
+        action: 'order-event-consumer', message: 'No order ID in event payload',
+        eventId, eventType, durationMs: Date.now() - startMs,
+        timestamp: new Date().toISOString(),
+      }));
       return {
         statusCode: 200,
         body: { message: 'No order ID in payload, skipping', eventId },
       };
     }
 
-    logger.info(`Processing order: ${orderId}`);
-
-    // Explicit env guards so a missing config produces a clear message (not a
-    // cryptic "Cannot read properties of undefined").
     const missing = [];
     if (!params.COMMERCE_API_BASE_URL) missing.push('COMMERCE_API_BASE_URL');
     if (!params.IMS_OAUTH_S2S_CLIENT_ID) missing.push('IMS_OAUTH_S2S_CLIENT_ID');
@@ -101,7 +103,6 @@ async function main (params) {
 
     const baseUrl = params.COMMERCE_API_BASE_URL.replace(/\/$/, '');
     const accessToken = await getImsAccessToken(params);
-
     const orderUrl = `${baseUrl}/V1/orders/${encodeURIComponent(orderId)}`;
 
     const orderResponse = await fetch(orderUrl, {
@@ -114,7 +115,11 @@ async function main (params) {
     });
 
     if (!orderResponse.ok) {
-      logger.error(`Commerce API returned ${orderResponse.status} for order ${orderId}`);
+      logger.error(JSON.stringify({
+        action: 'order-event-consumer', message: 'Commerce API error',
+        eventId, orderId, status: orderResponse.status,
+        durationMs: Date.now() - startMs, timestamp: new Date().toISOString(),
+      }));
       return {
         statusCode: 500,
         body: { error: `Failed to fetch order ${orderId}` },
@@ -143,13 +148,8 @@ async function main (params) {
       },
     };
 
-    logger.info('Enriched order:', JSON.stringify(enrichedOrder));
+    await state.put(`order-${orderId}`, JSON.stringify(enrichedOrder), { ttl: 604800 });
 
-    await state.put(`order-${orderId}`, JSON.stringify(enrichedOrder), {
-      ttl: 604800,
-    });
-
-    // Maintain known-order-ids index for the dashboard
     const knownOrdersResult = await state.get('known-order-ids');
     let knownOrderIds = [];
     if (knownOrdersResult && knownOrdersResult.value) {
@@ -167,7 +167,13 @@ async function main (params) {
       ttl: 86400,
     });
 
-    logger.info(`Successfully processed event ${eventId} for order ${orderId}`);
+    logger.info(JSON.stringify({
+      action: 'order-event-consumer', message: 'Order processed',
+      eventId, eventType, orderId,
+      orderTier: enrichedOrder.enrichment.orderTier,
+      isHighValue: enrichedOrder.enrichment.isHighValue,
+      durationMs: Date.now() - startMs, timestamp: new Date().toISOString(),
+    }));
 
     return {
       statusCode: 200,
@@ -179,7 +185,11 @@ async function main (params) {
       },
     };
   } catch (error) {
-    logger.error('Event processing failed:', error.message, error.stack);
+    logger.error(JSON.stringify({
+      action: 'order-event-consumer', message: 'Event processing failed',
+      error: error.message, durationMs: Date.now() - startMs,
+      timestamp: new Date().toISOString(),
+    }));
     return {
       statusCode: 500,
       body: { error: 'Event processing failed', detail: error.message },

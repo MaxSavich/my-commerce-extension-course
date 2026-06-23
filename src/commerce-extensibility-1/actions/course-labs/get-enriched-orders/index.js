@@ -5,6 +5,7 @@ async function main (params) {
   const logger = Core.Logger('get-enriched-orders', {
     level: params.LOG_LEVEL || 'info',
   });
+  const startMs = Date.now();
 
   try {
     const state = await stateLib.init();
@@ -47,20 +48,26 @@ async function main (params) {
       ).length,
     };
 
+    logger.info(JSON.stringify({
+      action: 'get-enriched-orders', message: 'Orders retrieved',
+      totalOrders: summary.totalOrders, totalRevenue: summary.totalRevenue,
+      durationMs: Date.now() - startMs, timestamp: new Date().toISOString(),
+    }));
+
     return {
       statusCode: 200,
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: { orders, summary },
     };
   } catch (error) {
-    logger.error('Failed to fetch enriched orders:', error.message);
+    logger.error(JSON.stringify({
+      action: 'get-enriched-orders', message: 'Action failed',
+      error: error.message, durationMs: Date.now() - startMs,
+      timestamp: new Date().toISOString(),
+    }));
     return {
       statusCode: 500,
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: { error: 'Failed to fetch enriched orders' },
     };
   }
